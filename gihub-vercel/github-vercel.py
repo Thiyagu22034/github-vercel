@@ -2,6 +2,7 @@ import streamlit as st
 import subprocess
 import requests
 import os
+import re
 import zipfile
 import tempfile
 import shutil
@@ -14,7 +15,7 @@ st.write("Upload your project as a .zip file (up to 1GB), provide your tokens, a
 with st.form("deploy_form"):
     st.write("### 📁 Project Information")
     uploaded_file = st.file_uploader("Upload Project Folder (.zip)", type=["zip"])
-    repo_name = st.text_input("Repository / Project Name (no spaces)", placeholder="my-awesome-app")
+    repo_name = st.text_input("Repository / Project Name", placeholder="my-awesome-app")
 
     st.markdown("---")
     st.write("### 🔑 API Credentials")
@@ -30,6 +31,15 @@ if submitted:
         st.stop()
     if not repo_name or not github_username or not github_token or not vercel_token:
         st.error("Please fill in all repository and credential fields.")
+        st.stop()
+
+    # Clean repo name for both GitHub and Vercel:
+    # Lowercase, collapse spaces/symbols/multiple hyphens into a single '-', cap at 100 chars
+    repo_name = re.sub(r"[^a-z0-9]+", "-", repo_name.strip().lower()).strip("-")[:100].strip("-")
+    github_username = github_username.strip()
+
+    if not repo_name:
+        st.error("Project name must contain at least one letter or number.")
         st.stop()
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -65,7 +75,7 @@ if submitted:
                         dirs.remove(d)
 
             # Step 1: Create GitHub Repository
-            st.info("Creating GitHub repository...")
+            st.info(f"Creating GitHub repository '{repo_name}'...")
             gh_headers = {
                 "Authorization": f"token {github_token}",
                 "Accept": "application/vnd.github.v3+json"
@@ -100,7 +110,6 @@ if submitted:
             for cmd in commands:
                 result = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
                 if result.returncode != 0:
-                    # Mask token in error output if present
                     err_msg = result.stderr.replace(github_token, "***")
                     st.error(f"Git error on `{' '.join(cmd[:2])}`:\n{err_msg}")
                     st.stop()
