@@ -74,7 +74,7 @@ if submitted:
                         shutil.rmtree(os.path.join(root, d), ignore_errors=True)
                         dirs.remove(d)
 
-            # Step 1: Create GitHub Repository
+            # Step 1: Create GitHub Repository (and get repo_id for Vercel)
             st.info(f"Creating GitHub repository '{repo_name}'...")
             gh_headers = {
                 "Authorization": f"token {github_token}",
@@ -86,7 +86,16 @@ if submitted:
                 headers=gh_headers
             )
 
-            if gh_res.status_code not in [201, 422]:
+            if gh_res.status_code == 201:
+                repo_id = gh_res.json().get("id")
+            elif gh_res.status_code == 422:
+                # Repo already exists — fetch its numeric ID
+                existing_res = requests.get(
+                    f"https://api.github.com/repos/{github_username}/{repo_name}",
+                    headers=gh_headers
+                )
+                repo_id = existing_res.json().get("id")
+            else:
                 st.error(f"GitHub API Error: {gh_res.json().get('message')}")
                 st.stop()
 
@@ -116,10 +125,10 @@ if submitted:
 
             st.success("Code successfully pushed to GitHub!")
 
-            # Step 3: Vercel Deploy
-            st.info("Deploying to Vercel...")
+            # Step 3: Create Vercel Project & Trigger Live Deployment
+            st.info("Creating Vercel project...")
             vc_headers = {"Authorization": f"Bearer {vercel_token}"}
-            vc_payload = {
+            vc_project_payload = {
                 "name": repo_name,
                 "gitRepository": {
                     "type": "github",
@@ -127,15 +136,44 @@ if submitted:
                 }
             }
 
-            vc_res = requests.post("https://api.vercel.com/v9/projects", json=vc_payload, headers=vc_headers)
+            vc_proj_res = requests.post(
+                "https://api.vercel.com/v9/projects",
+                json=vc_project_payload,
+                headers=vc_headers
+            )
 
-            if vc_res.status_code in [200, 201]:
-                project_data = vc_res.json()
-                domain = f"{project_data.get('name')}.vercel.app"
-                st.success("🎉 Deployment triggered successfully!")
-                st.markdown(f"**Your live site will be available at:** [https://{domain}](https://{domain})")
+            # 200/201 = created, 409 = project already exists (both are fine)
+            if vc_proj_res.status_code not in [200, 201, 409]:
+                st.error(f"Vercel Project Error: {vc_proj_res.json().get('error', {}).get('message', 'Unknown error')}")
+                st.stop()
+
+            # Trigger the actual production build from GitHub main branch
+            st.info("Triggering Vercel build...")
+            vc_deploy_payload = {
+                "name": repo_name,
+                "project": repo_name,
+                "target": "production",
+                "gitSource": {
+                    "type": "github",
+                    "ref": "main",
+                    "repoId": repo_id
+                }
+            }
+
+            vc_deploy_res = requests.post(
+                "https://api.vercel.com/v13/deployments",
+                json=vc_deploy_payload,
+                headers=vc_headers
+            )
+
+            if vc_deploy_res.status_code in [200, 201]:
+                deploy_data = vc_deploy_res.json()
+                live_url = deploy_data.get("url")
+                st.success("🎉 Deployment started! Wait 30–60 seconds for Vercel to finish building.")
+                st.markdown(f"**Deployment URL:** [https://{live_url}](https://{live_url})")
+                st.markdown(f"**Production Domain:** [https://{repo_name}.vercel.app](https://{repo_name}.vercel.app)")
             else:
-                st.error(f"Vercel API Error: {vc_res.json().get('error', {}).get('message', 'Unknown error')}")
+                st.error(f"Vercel Deploy Error: {vc_deploy_res.json().get('error', {}).get('message', 'Unknown error')}")
 
         except Exception as e:
             st.error(f"An unexpected error occurred: {str(e)}")
