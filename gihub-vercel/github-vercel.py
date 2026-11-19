@@ -4,15 +4,15 @@ import requests
 import os
 import zipfile
 import tempfile
+import shutil
 
 st.set_page_config(page_title="Cloud Auto-Deploy", layout="centered")
 
 st.title("☁️ Cloud to Vercel Deployer")
-st.write("Upload your project as a .zip file, provide your tokens, and deploy directly from the cloud.")
+st.write("Upload your project as a .zip file (up to 1GB), provide your tokens, and deploy directly.")
 
 with st.form("deploy_form"):
     st.write("### 📁 Project Information")
-    # File uploader specifically set for ZIP files
     uploaded_file = st.file_uploader("Upload Project Folder (.zip)", type=["zip"])
     repo_name = st.text_input("Repository / Project Name (no spaces)", placeholder="my-awesome-app")
 
@@ -32,30 +32,38 @@ if submitted:
         st.error("Please fill in all repository and credential fields.")
         st.stop()
 
-    # Create a secure temporary directory on the server
     with tempfile.TemporaryDirectory() as temp_dir:
-        st.info("Extracting uploaded ZIP file...")
-
-        # Save the uploaded zip to the temp directory
-        zip_path = os.path.join(temp_dir, "uploaded_project.zip")
-        with open(zip_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
-        # Extract the contents
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
-
-        # Delete the zip file so it doesn't get uploaded to GitHub
-        os.remove(zip_path)
-
-        # Detect if the ZIP extracted into a single outer folder and step inside it
-        items = [i for i in os.listdir(temp_dir) if i != "__MACOSX"]
-        if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
-            work_dir = os.path.join(temp_dir, items[0])
-        else:
-            work_dir = temp_dir
-
         try:
+            # Save uploaded ZIP in 8MB chunks to prevent RAM crashes
+            st.info("Saving uploaded ZIP file...")
+            zip_path = os.path.join(temp_dir, "uploaded_project.zip")
+            uploaded_file.seek(0)
+            with open(zip_path, "wb") as f:
+                shutil.copyfileobj(uploaded_file, f, length=8 * 1024 * 1024)
+
+            # Extract the contents
+            st.info("Extracting ZIP file...")
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(temp_dir)
+
+            # Delete the zip file to free up disk space
+            os.remove(zip_path)
+
+            # Detect if the ZIP extracted into a single outer folder
+            items = [i for i in os.listdir(temp_dir) if i != "__MACOSX"]
+            if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+                work_dir = os.path.join(temp_dir, items[0])
+            else:
+                work_dir = temp_dir
+
+            # Remove heavy build/dependency folders (Vercel rebuilds these automatically)
+            ignore_dirs = {"node_modules", ".git", ".next", "dist", "build", "venv", ".venv", "__pycache__"}
+            for root, dirs, files in os.walk(work_dir, topdown=True):
+                for d in list(dirs):
+                    if d in ignore_dirs:
+                        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                        dirs.remove(d)
+
             # Step 1: Create GitHub Repository
             st.info("Creating GitHub repository...")
             gh_headers = {
@@ -80,7 +88,6 @@ if submitted:
 
             commands = [
                 ["git", "init"],
-                # Streamlit Cloud servers don't have a default Git user configured, so we set a temporary one
                 ["git", "config", "user.email", "bot@streamlit.app"],
                 ["git", "config", "user.name", "Streamlit Cloud Bot"],
                 ["git", "add", "."],
@@ -91,7 +98,12 @@ if submitted:
             ]
 
             for cmd in commands:
-                subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
+                result = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
+                if result.returncode != 0:
+                    # Mask token in error output if present
+                    err_msg = result.stderr.replace(github_token, "***")
+                    st.error(f"Git error on `{' '.join(cmd[:2])}`:\n{err_msg}")
+                    st.stop()
 
             st.success("Code successfully pushed to GitHub!")
 
