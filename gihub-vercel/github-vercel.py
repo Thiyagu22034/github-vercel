@@ -48,6 +48,13 @@ if submitted:
         # Delete the zip file so it doesn't get uploaded to GitHub
         os.remove(zip_path)
 
+        # Detect if the ZIP extracted into a single outer folder and step inside it
+        items = [i for i in os.listdir(temp_dir) if i != "__MACOSX"]
+        if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
+            work_dir = os.path.join(temp_dir, items[0])
+        else:
+            work_dir = temp_dir
+
         try:
             # Step 1: Create GitHub Repository
             st.info("Creating GitHub repository...")
@@ -84,7 +91,7 @@ if submitted:
             ]
 
             for cmd in commands:
-                subprocess.run(cmd, cwd=temp_dir, capture_output=True, text=True)
+                subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
 
             st.success("Code successfully pushed to GitHub!")
 
